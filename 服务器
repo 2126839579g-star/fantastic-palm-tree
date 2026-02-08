@@ -1,12 +1,90 @@
+根据你提供的 `package.json` 配置，你需要创建一个名为 **`server.js`** 的文件。这是一个使用 `ws` 库实现的简单 WebSocket 聊天服务器代码。
 
-{
-  "name": "my-chat-server",
-  "version": "1.0.0",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "ws": "^8.0.0"
-  }
-}
+### 1. 创建 `server.js`
+
+将以下代码保存为 `server.js`：
+
+```javascript
+const WebSocket = require('ws');
+
+// 创建一个 WebSocket 服务器，监听 8080 端口
+const wss = new WebSocket.Server({ port: 8080 });
+
+console.log('WebSocket 聊天服务器已启动，监听端口: 8080');
+
+// 当有新客户端连接时触发
+wss.on('connection', (ws) => {
+    console.log('新客户端已连接');
+
+    // 向当前连接的客户端发送欢迎消息
+    ws.send('欢迎加入聊天室！');
+
+    // 监听客户端发送的消息
+    ws.on('message', (message) => {
+        // 在 Node.js 中，message 默认可能是 Buffer 格式，需要转换成字符串
+        const messageString = message.toString();
+        console.log('收到消息 =>', messageString);
+
+        // 广播给所有已连接的客户端
+        wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(messageString);
+            }
+        });
+    });
+
+    // 监听客户端断开连接
+    ws.on('close', () => {
+        console.log('客户端已断开连接');
+    });
+
+    // 错误处理
+    ws.on('error', (error) => {
+        console.error('发生错误:', error);
+    });
+});
+```
+
+---
+
+### 2. 如何运行
+
+在你的项目根目录下（即包含 `package.json` 和 `server.js` 的地方），按照以下步骤操作：
+
+1.  **安装依赖：**
+    打开终端或命令行，运行：
+    ```bash
+    npm install
+    ```
+
+2.  **启动服务器：**
+    运行你在 `package.json` 中定义的启动脚本：
+    ```bash
+    npm start
+    ```
+
+---
+
+### 3. 如何测试
+
+你可以编写一个简单的 HTML 文件在浏览器中测试，或者直接在浏览器的控制台（F12 -> Console）输入以下 JavaScript 代码进行测试：
+
+```javascript
+// 在浏览器控制台运行
+const socket = new WebSocket('ws://localhost:8080');
+
+// 监听消息
+socket.onmessage = (event) => {
+    console.log('从服务器收到:', event.data);
+};
+
+// 连接成功后发送消息
+socket.onopen = () => {
+    socket.send('你好，服务器！我是测试客户端。');
+};
+```
+
+### 功能说明：
+1.  **多用户转发**：服务器收到任何一个人的消息，都会转发给所有在线的人（广播）。
+2.  **自动解析**：代码中加入了 `.toString()` 处理，确保在不同版本的 Node.js 中都能正确读取文本。
+3.  **状态检查**：在广播前会检查 `client.readyState`，防止向已关闭的连接发送数据导致崩溃。
