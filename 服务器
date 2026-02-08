@@ -1,48 +1,218 @@
-const http = require('http');
 const WebSocket = require('ws');
+const http = require('http');
+const url = require('url');
 
-// 1. 创建一个基础的 HTTP 服务器
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('WebSocket server is running\n');
-});
+// 创建 HTTP 服务器
+const server = http.createServer();
 
-// 2. 在 HTTP 服务器之上初始化 WebSocket 服务器
+// 创建 WebSocket 服务器，附加到 HTTP 服务器
 const wss = new WebSocket.Server({ server });
 
-// 3. 监听连接事件
-wss.on('connection', (ws) => {
-  console.log('新客户端已连接');
+// 存储所有连接的客户端
+const clients = new Set();
 
-  // 监听来自当前客户端的消息
-  ws.on('message', (data) => {
-    // 在 ws 8.x 中，data 通常是 Buffer 格式，需要转换
-    const message = data.toString();
-    console.log(`收到消息: ${message}`);
-
-    // 4. 广播消息给所有已连接的客户端
-    wss.clients.forEach((client) => {
-      // 检查连接是否处于打开状态
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(message);
-      }
+// 处理 WebSocket 连接
+wss.on('connection', (ws, request) => {
+    // 获取客户端信息（从查询参数或 headers）
+    const location = url.parse(request.url, true);
+    const clientId = generateClientId();
+    const clientIp = request.headers['x-forwarded-for'] || 
+                     request.connection.remoteAddress;
+    
+    console.log(`[${new Date().toLocaleTimeString()}] 客户端连接: ${clientId} (IP: ${clientIp})`);
+    
+    // 将客户端添加到集合
+    clients.add(ws);
+    
+    // 发送欢迎消息
+    const welcomeMsg = {
+        type: 'system',
+        message: '欢迎来到聊天室！',
+        clientId: clientId,
+        timestamp: new Date().toISOString(),
+        onlineCount: clients.size
+    };
+    ws.send(JSON.stringify(welcomeMsg));
+    
+    // 广播有新用户加入
+    broadcast({
+        type: 'system',
+        message: `用户 ${clientId} 加入了聊天室`,
+        clientId: 'system',
+        timestamp: new Date().toISOString(),
+        onlineCount: clients.size
     });
-  });
-
-  // 监听连接关闭
-  ws.on('close', () => {
-    console.log('客户端已断开连接');
-  });
-
-  // 监听错误
-  ws.on('error', (error) => {
-    console.error('WebSocket 错误:', error);
-  });
+    
+    // 处理来自客户端的消息
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            
+            // 验证消息结构
+            if (!data.type || !data.content) {
+                throw new Error('无效的消息格式');
+            }
+            
+            // 处理不同类型的消息
+            switch (data.type) {
+                case 'message':
+                    const chatMessage = {
+                        type: 'message',
+                        content: data.content,
+                        sender: clientId,
+                        senderName: data.senderName || `用户${clientId.substring(0, 6)}`,
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    console.log(`[${new Date().toLocaleTimeString()}] ${chatMessage.senderName}: ${data.content}`);
+                    
+                    // 广播消息给所有客户端
+                    broadcast(chatMessage);
+                    break;
+                    
+                case 'private':
+                    // 私聊消息（简单实现）
+                    if (data.targetClientId) {
+                        sendToClient(data.targetClientId, {
+                            type: 'private',
+                            content: data.content,
+                            from: clientId,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                    break;
+                    
+                case 'command':
+                    // 处理命令
+                    handleCommand(ws, clientId, data);
+                    break;
+                    
+                default:
+                    // 未知消息类型
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: '未知的消息类型'
+                    }));
+            }
+        } catch (error) {
+            console.error('消息处理错误:', error.message);
+            ws.send(JSON.stringify({
+                type: 'error',
+                message: '消息格式错误',
+                details: error.message
+            }));
+        }
+    });
+    
+    // 处理连接关闭
+    ws.on('close', () => {
+        clients.delete(ws);
+        
+        console.log(`[${new Date().toLocaleTimeString()}] 客户端断开: ${clientId}`);
+        
+        // 广播用户离开
+        broadcast({
+            type: 'system',
+            message: `用户 ${clientId} 离开了聊天室`,
+            clientId: 'system',
+            timestamp: new Date().toISOString(),
+            onlineCount: clients.size
+        });
+    });
+    
+    // 处理错误
+    ws.on('error', (error) => {
+        console.error(`客户端 ${clientId} 错误:`, error.message);
+    });
 });
 
-// --- 你提供的代码片段开始 ---
+// 广播消息给所有客户端
+function broadcast(message) {
+    const messageStr = JSON.stringify(message);
+    clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(messageStr);
+        }
+    });
+}
+
+// 发送消息给特定客户端（简化版）
+function sendToClient(targetClientId, message) {
+    // 注意：在实际应用中，需要维护 clientId 到 WebSocket 连接的映射
+    console.log(`尝试发送私聊消息给客户端 ${targetClientId}`);
+    // 这里只是简单演示，实际需要更复杂的映射机制
+}
+
+// 处理命令
+function handleCommand(ws, clientId, data) {
+    switch (data.command) {
+        case 'help':
+            ws.send(JSON.stringify({
+                type: 'system',
+                message: '可用命令: /help - 显示帮助, /users - 显示在线用户',
+                timestamp: new Date().toISOString()
+            }));
+            break;
+            
+        case 'users':
+            ws.send(JSON.stringify({
+                type: 'system',
+                message: `当前在线用户数: ${clients.size}`,
+                timestamp: new Date().toISOString()
+            }));
+            break;
+            
+        default:
+            ws.send(JSON.stringify({
+                type: 'error',
+                message: `未知命令: ${data.command}`,
+                timestamp: new Date().toISOString()
+            }));
+    }
+}
+
+// 生成客户端ID
+function generateClientId() {
+    return 'client_' + Math.random().toString(36).substring(2,十三) + Date.now().toString(36);
+}
+
+// 设置服务器端口
 const PORT = process.env.PORT || 8080;
+
+// 启动服务器
 server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+    console.log(`=======================================`);
+    console.log(`聊天服务器已启动`);
+    console.log(`地址: ws://localhost:${PORT}`);
+    console.log(`时间: ${new Date().toLocaleString()}`);
+    console.log(`=======================================`);
 });
-// --- 你提供的代码片段结束 ---
+
+// 优雅关闭
+process.on('SIGINT', () => {
+    console.log('正在关闭服务器...');
+    
+    // 通知所有客户端
+    broadcast({
+        type: 'system',
+        message: '服务器即将关闭',
+        timestamp: new Date().toISOString()
+    });
+    
+    // 关闭所有连接
+    wss.clients.forEach(client => {
+        client.close();
+    });
+    
+    setTimeout(() => {
+        server.close(() => {
+            console.log('服务器已关闭');
+            process.exit(0);
+        });
+    }, 1000);
+});
+
+// 服务器错误处理
+server.on('error', (error) => {
+    console.error('服务器错误:', error);
+});
